@@ -35,64 +35,50 @@ class BackendService {
   async register(email: string, password: string, role: Role, name: string, companyName?: string): Promise<User> {
     if (!isSupabaseConfigured() || !supabase) throw new Error("Supabase not configured");
 
+    // 1. Создаем пользователя в Auth
+    const { data, error } = await supabase.auth.signUp({
+      email,
+      password,
+      options: {
+        data: {
+          role,
+          name,
+          company_name: companyName,
+        }
+      }
+    });
+
+    if (error) throw error;
+    if (!data.user) throw new Error("Registration failed");
+
+    // 2. Ждем триггер, затем пытаемся получить профиль или создать его вручную
+    // Небольшая задержка для триггера
+    await new Promise(r => setTimeout(r, 500));
+
     try {
-        // 1. Attempt Sign Up
-        const { data, error } = await supabase.auth.signUp({
-          email,
-          password,
-          options: {
-            data: {
-              role,
-              name,
-              company_name: companyName,
-            }
-          }
+        return await this.fetchUserProfile(data.user.id, email);
+    } catch (e) {
+        console.warn("Profile not found after trigger, attempting manual creation...");
+        
+        // Ручное создание, если триггер не сработал.
+        // Теперь это сработает, так как мы добавили Policy FOR INSERT в SQL.
+        const { error: insertError } = await supabase.from('profiles').insert({
+            id: data.user.id,
+            email: email,
+            name: name,
+            role: role,
+            company_name: companyName
         });
 
-        if (error) throw error;
-        if (!data.user) throw new Error("Registration failed");
-
-        // 2. Wait for Trigger
-        await new Promise(r => setTimeout(r, 1000));
-
-        // 3. Verify Profile Creation
-        try {
-            return await this.fetchUserProfile(data.user.id, email);
-        } catch (profileError) {
-            console.warn("Profile fetch failed, attempting manual creation...", profileError);
-            
-            // Fallback: If trigger failed but user created (unlikely if trigger throws, but possible if trigger swallowed error)
-            // or if trigger didn't run.
-            const { error: insertError } = await supabase.from('profiles').insert({
-                id: data.user.id,
-                email: email,
-                name: name,
-                role: role,
-                company_name: companyName
-            });
-            
-            if (insertError) {
-                console.error("Manual profile creation failed:", insertError);
-                // Return basic user to not block login
-                return {
-                    id: data.user.id,
-                    email: email,
-                    name: name,
-                    role: role,
-                    isBlocked: false,
-                    companyName: companyName
-                };
+        if (insertError) {
+            console.error("Manual profile insert failed:", insertError);
+            if (insertError.code === '42501') {
+                throw new Error("Ошибка доступа к БД. Запустите обновленный 'supabase_setup.sql' для исправления прав.");
             }
-            
-            return await this.fetchUserProfile(data.user.id, email);
+            throw insertError;
         }
 
-    } catch (err: any) {
-        console.error("Registration error:", err);
-        if (err.message && err.message.includes("Database error saving new user")) {
-            throw new Error("Ошибка базы данных. Пожалуйста, выполните скрипт 'supabase_setup.sql' в SQL редакторе Supabase.");
-        }
-        throw err;
+        return await this.fetchUserProfile(data.user.id, email);
     }
   }
 
@@ -105,21 +91,28 @@ class BackendService {
   private async fetchUserProfile(userId: string, email: string): Promise<User> {
     if (!supabase) throw new Error("No DB");
     
+    // Используем maybeSingle() вместо single(), чтобы не получать ошибку PGRST116, если записи нет
     const { data, error } = await supabase
       .from('profiles')
       .select('*')
       .eq('id', userId)
-      .single();
+      .maybeSingle();
 
-    if (error || !data) {
-        throw new Error("Profile not found");
+    if (error) {
+        console.error("Error fetching profile:", error);
+        throw error;
+    }
+
+    if (!data) {
+        // Если профиля нет, выбрасываем ошибку, чтобы вызывающий метод (register) мог запустить fallback
+        throw new Error("Profile missing");
     }
 
     return {
       id: data.id,
       email: data.email || email,
       name: data.name,
-      role: data.role as Role,
+      role: (data.role as Role) || 'BUYER',
       companyName: data.company_name,
       inn: data.inn,
       phone: data.phone,

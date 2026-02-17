@@ -1,153 +1,306 @@
 
-import { Category, Product, User, ExcelImportLog, DailyStat, Lead } from '../types';
-import { MOCK_CATEGORIES, MOCK_PRODUCTS, MOCK_USERS } from '../constants';
+import { Category, Product, User, ExcelImportLog, DailyStat, Lead, Role } from '../types';
+import { MOCK_CATEGORIES } from '../constants';
+import { supabase, isSupabaseConfigured } from './supabase';
 
-// Simulating a backend service with local state
-class MockBackendService {
-  private users: User[] = [...MOCK_USERS];
-  private products: Product[] = [...MOCK_PRODUCTS];
-  private categories: Category[] = [...MOCK_CATEGORIES];
-  private importLogs: ExcelImportLog[] = [];
-  private leads: Lead[] = [
-    { id: 'l1', date: '2023-10-25', productName: 'Арматура А500С 12мм', buyerName: 'ООО СтройТрест', buyerPhone: '+7 (999) 111-22-33', status: 'NEW', amount: 20, totalPrice: 1080000 },
-    { id: 'l2', date: '2023-10-24', productName: 'Лист г/к 10мм Ст3сп5', buyerName: 'ИП Петров', buyerPhone: '+7 (912) 345-67-89', status: 'IN_PROGRESS', amount: 5, totalPrice: 342500 },
-    { id: 'l3', date: '2023-10-23', productName: 'Труба профильная 80x80x4', buyerName: 'АО МеталлГрупп', buyerPhone: '+7 (495) 555-00-00', status: 'DONE', amount: 10, totalPrice: 720000 },
-    { id: 'l4', date: '2023-10-22', productName: 'Арматура А500С 12мм', buyerName: 'Застройщик-М', buyerPhone: '+7 (900) 000-00-01', status: 'NEW', amount: 100, totalPrice: 5400000 },
-  ];
+class BackendService {
+  // --- Auth ---
 
-  // --- Auth & User ---
-  async login(role: string): Promise<User> {
-    // Simulate API delay
-    await new Promise(r => setTimeout(r, 500));
-    const user = this.users.find(u => u.role === role);
-    if (!user) throw new Error('User not found');
-    // Add mock balance if seller
-    if(role === 'SELLER') {
-        user.balance = 125000;
-        user.inn = '7701234567';
-        user.website = 'https://mysite.ru';
-        user.phone = '+7 (800) 200-00-00';
+  // Получить текущую сессию
+  async getSession(): Promise<User | null> {
+    if (!isSupabaseConfigured() || !supabase) return null;
+
+    const { data: { session } } = await supabase.auth.getSession();
+    if (!session?.user) return null;
+
+    return this.fetchUserProfile(session.user.id, session.user.email || '');
+  }
+
+  // Вход
+  async login(email: string, password: string): Promise<User> {
+    if (!isSupabaseConfigured() || !supabase) throw new Error("Supabase not configured");
+
+    const { data, error } = await supabase.auth.signInWithPassword({
+      email,
+      password,
+    });
+
+    if (error) throw error;
+    if (!data.user) throw new Error("No user data");
+
+    return this.fetchUserProfile(data.user.id, data.user.email || '');
+  }
+
+  // Регистрация
+  async register(email: string, password: string, role: Role, name: string, companyName?: string): Promise<User> {
+    if (!isSupabaseConfigured() || !supabase) throw new Error("Supabase not configured");
+
+    try {
+        // 1. Attempt Sign Up
+        const { data, error } = await supabase.auth.signUp({
+          email,
+          password,
+          options: {
+            data: {
+              role,
+              name,
+              company_name: companyName,
+            }
+          }
+        });
+
+        if (error) throw error;
+        if (!data.user) throw new Error("Registration failed");
+
+        // 2. Wait for Trigger
+        await new Promise(r => setTimeout(r, 1000));
+
+        // 3. Verify Profile Creation
+        try {
+            return await this.fetchUserProfile(data.user.id, email);
+        } catch (profileError) {
+            console.warn("Profile fetch failed, attempting manual creation...", profileError);
+            
+            // Fallback: If trigger failed but user created (unlikely if trigger throws, but possible if trigger swallowed error)
+            // or if trigger didn't run.
+            const { error: insertError } = await supabase.from('profiles').insert({
+                id: data.user.id,
+                email: email,
+                name: name,
+                role: role,
+                company_name: companyName
+            });
+            
+            if (insertError) {
+                console.error("Manual profile creation failed:", insertError);
+                // Return basic user to not block login
+                return {
+                    id: data.user.id,
+                    email: email,
+                    name: name,
+                    role: role,
+                    isBlocked: false,
+                    companyName: companyName
+                };
+            }
+            
+            return await this.fetchUserProfile(data.user.id, email);
+        }
+
+    } catch (err: any) {
+        console.error("Registration error:", err);
+        if (err.message && err.message.includes("Database error saving new user")) {
+            throw new Error("Ошибка базы данных. Пожалуйста, выполните скрипт 'supabase_setup.sql' в SQL редакторе Supabase.");
+        }
+        throw err;
     }
-    return user;
+  }
+
+  // Выход
+  async logout(): Promise<void> {
+    if (supabase) await supabase.auth.signOut();
+  }
+
+  // Вспомогательный метод получения профиля
+  private async fetchUserProfile(userId: string, email: string): Promise<User> {
+    if (!supabase) throw new Error("No DB");
+    
+    const { data, error } = await supabase
+      .from('profiles')
+      .select('*')
+      .eq('id', userId)
+      .single();
+
+    if (error || !data) {
+        throw new Error("Profile not found");
+    }
+
+    return {
+      id: data.id,
+      email: data.email || email,
+      name: data.name,
+      role: data.role as Role,
+      companyName: data.company_name,
+      inn: data.inn,
+      phone: data.phone,
+      website: data.website,
+      balance: data.balance,
+      isBlocked: data.is_blocked,
+      rating: data.rating,
+      isVerified: data.is_verified,
+      yearsOnPlatform: data.years_on_platform,
+      region: data.region
+    };
   }
 
   // --- Products ---
   async getProducts(filters?: { categoryId?: string, search?: string, sellerId?: string }): Promise<Product[]> {
-    await new Promise(r => setTimeout(r, 300));
-    let res = this.products;
+    if (!isSupabaseConfigured() || !supabase) return [];
 
+    let query = supabase.from('products').select('*').eq('status', 'ACTIVE');
+    
     if (filters?.sellerId) {
-      res = res.filter(p => p.sellerId === filters.sellerId);
+        // Продавцы видят и неактивные товары
+        query = supabase.from('products').select('*').eq('seller_id', filters.sellerId);
     }
-    if (filters?.categoryId) {
-      // Simple filter, in real app would need recursive check for child categories
-      res = res.filter(p => p.categoryId === filters.categoryId || this.getChildCategoryIds(filters.categoryId).includes(p.categoryId));
-    }
-    if (filters?.search) {
-      const q = filters.search.toLowerCase();
-      res = res.filter(p => 
-        p.name.toLowerCase().includes(q) || 
-        p.description.toLowerCase().includes(q) ||
-        Object.values(p.specifications).some(val => val.toLowerCase().includes(q))
-      );
-    }
-    return res;
-  }
+    
+    if (filters?.categoryId) query = query.eq('category_id', filters.categoryId);
+    if (filters?.search) query = query.ilike('name', `%${filters.search}%`);
 
-  private getChildCategoryIds(parentId: string): string[] {
-    const children = this.categories.filter(c => c.parentId === parentId);
-    let ids = children.map(c => c.id);
-    children.forEach(c => {
-      ids = [...ids, ...this.getChildCategoryIds(c.id)];
-    });
-    return ids;
+    const { data, error } = await query;
+    
+    if (error) {
+        console.error("Error fetching products:", error);
+        return [];
+    }
+
+    return (data || []).map((p: any) => ({
+        id: p.id,
+        name: p.name,
+        description: p.description,
+        price: p.price,
+        stock: p.stock,
+        categoryId: p.category_id,
+        sellerId: p.seller_id,
+        image: p.image,
+        specifications: p.specifications || {},
+        tags: p.tags || [],
+        views: p.views,
+        createdAt: p.created_at,
+        status: p.status,
+        region: p.region,
+        gost: p.gost
+    }));
   }
 
   async createProduct(product: Omit<Product, 'id' | 'views' | 'createdAt' | 'status'>): Promise<Product> {
-    const newProduct: Product = {
-      ...product,
-      id: Math.random().toString(36).substr(2, 9),
-      views: 0,
-      createdAt: new Date().toISOString(),
-      status: 'ACTIVE'
+    if (!isSupabaseConfigured() || !supabase) throw new Error("DB not connected");
+
+    const dbProduct = {
+        seller_id: product.sellerId,
+        category_id: product.categoryId,
+        name: product.name,
+        description: product.description,
+        price: product.price,
+        stock: product.stock,
+        image: product.image,
+        specifications: product.specifications,
+        tags: product.tags,
+        region: product.region,
+        gost: product.gost,
+        status: 'ACTIVE'
     };
-    this.products.unshift(newProduct);
-    return newProduct;
+    
+    const { data, error } = await supabase.from('products').insert(dbProduct).select().single();
+    
+    if (error) throw error;
+    
+    return {
+        ...product,
+        id: data.id,
+        views: 0,
+        createdAt: data.created_at,
+        status: 'ACTIVE'
+    };
   }
 
+  // --- Import ---
   async processExcelUpload(file: File, sellerId: string): Promise<ExcelImportLog> {
-    await new Promise(r => setTimeout(r, 1500)); // Simulate processing
+    if (!isSupabaseConfigured() || !supabase) throw new Error("DB not connected");
+
+    // 1. В реальном приложении: Загружаем файл в Storage
+    // const { data: fileData, error: fileError } = await supabase.storage.from('imports').upload(...)
     
-    // Simulate adding random products from "Excel"
-    const newCount = Math.floor(Math.random() * 5) + 2;
+    // 2. Симулируем создание товаров (В реальности это делает Edge Function)
+    const newCount = Math.floor(Math.random() * 5) + 1;
     for(let i=0; i<newCount; i++) {
         await this.createProduct({
-            name: `Imported Item ${Math.floor(Math.random() * 1000)}`,
-            description: 'Imported via Excel bulk upload',
-            price: Math.floor(Math.random() * 5000) + 1000,
+            name: `Импорт Excel ${Math.floor(Math.random() * 1000)}`,
+            description: 'Автоматический импорт',
+            price: 50000,
             stock: 100,
-            categoryId: 'c1-1',
+            categoryId: 'c1-1', // Hardcoded for demo
             sellerId: sellerId,
-            image: 'https://images.unsplash.com/photo-1504917595217-d4dc5ebe6122?auto=format&fit=crop&q=80&w=800',
-            specifications: { 'Source': 'Excel' },
-            tags: ['imported'],
+            image: null as any,
+            specifications: { 'Источник': 'Excel' },
+            tags: ['import'],
             region: 'Москва'
         });
     }
 
-    const log: ExcelImportLog = {
-      id: Math.random().toString(36).substr(2, 9),
-      fileName: file.name,
-      sellerId,
-      status: 'SUCCESS',
-      rowCount: newCount,
-      createdAt: new Date().toISOString()
+    // 3. Лог
+    const { data, error } = await supabase.from('excel_import_logs').insert({
+        seller_id: sellerId,
+        file_name: file.name,
+        status: 'SUCCESS',
+        row_count: newCount
+    }).select().single();
+
+    if (error) throw error;
+
+    return {
+        id: data.id,
+        fileName: data.file_name,
+        sellerId: data.seller_id,
+        status: data.status,
+        rowCount: data.row_count,
+        createdAt: data.created_at
     };
-    this.importLogs.unshift(log);
-    return log;
   }
 
-  async getImportLogs(sellerId: string): Promise<ExcelImportLog[]> {
-      return this.importLogs.filter(l => l.sellerId === sellerId);
-  }
-
-  // --- Stats & Seller Data ---
+  // --- Stats ---
   async getSellerStats(sellerId: string): Promise<{ totalProducts: number, topProduct: Product | null, dailyViews: DailyStat[], leads: Lead[] }> {
-    const sellerProducts = this.products.filter(p => p.sellerId === sellerId);
-    const topProduct = [...sellerProducts].sort((a,b) => b.views - a.views)[0] || null;
+    if (!isSupabaseConfigured() || !supabase) return { totalProducts: 0, topProduct: null, dailyViews: [], leads: [] };
+
+    // Товары
+    const { data: products } = await supabase.from('products').select('*').eq('seller_id', sellerId);
+    const mappedProducts = (products || []).map((p:any) => ({ ...p, id: p.id, views: p.views || 0 }));
     
-    // Mock daily stats
-    const dailyViews = Array.from({ length: 7 }).map((_, i) => ({
-      date: new Date(Date.now() - (6-i) * 86400000).toLocaleDateString('ru-RU', { day: 'numeric', month: 'short' }),
-      views: Math.floor(Math.random() * 500) + 100,
-      orders: Math.floor(Math.random() * 10)
+    const topProduct = mappedProducts.sort((a:any, b:any) => b.views - a.views)[0] || null;
+
+    // Лиды
+    const { data: leadsData } = await supabase.from('leads').select('*').eq('seller_id', sellerId);
+    const leads = (leadsData || []).map((l:any) => ({
+         id: l.id,
+         date: new Date(l.created_at).toLocaleDateString(),
+         productName: l.product_name,
+         buyerName: l.buyer_name,
+         buyerPhone: l.buyer_phone,
+         status: l.status,
+         amount: l.amount,
+         totalPrice: l.total_price
     }));
 
     return {
-      totalProducts: sellerProducts.length,
-      topProduct,
-      dailyViews,
-      leads: this.leads
+      totalProducts: mappedProducts.length,
+      topProduct: topProduct as any,
+      dailyViews: [], // Реальная аналитика требует отдельной таблицы events
+      leads
     };
   }
 
   async getLeads(): Promise<Lead[]> {
-      await new Promise(r => setTimeout(r, 300));
-      return this.leads;
+    if (!supabase) return [];
+    const { data } = await supabase.from('leads').select('*');
+    return (data || []).map((l:any) => ({
+        id: l.id,
+        date: new Date(l.created_at).toLocaleDateString(),
+        productName: l.product_name,
+        buyerName: l.buyer_name,
+        buyerPhone: l.buyer_phone,
+        status: l.status,
+        amount: l.amount,
+        totalPrice: l.total_price
+   }));
   }
 
-  // --- Admin ---
   async getCategories(): Promise<Category[]> {
-    return this.categories;
-  }
-
-  async getPlatformStats(): Promise<any> {
-      return {
-          totalUsers: this.users.length,
-          totalProducts: this.products.length,
-          totalVolume: '$1.2M'
-      }
+    if (supabase) {
+        const { data } = await supabase.from('categories').select('*');
+        if (data && data.length > 0) return data.map((c:any) => ({...c, parentId: c.parent_id}));
+    }
+    return MOCK_CATEGORIES;
   }
 }
 
-export const mockBackend = new MockBackendService();
+export const mockBackend = new BackendService();

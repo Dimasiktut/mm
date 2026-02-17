@@ -1,3 +1,4 @@
+
 import React, { useState } from 'react';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { 
@@ -9,37 +10,75 @@ import {
   X,
   Phone,
   Briefcase,
-  Shield,
   LogOut,
-  LayoutDashboard
+  Loader2
 } from 'lucide-react';
 import { User, Role } from '../types';
+import { mockBackend } from '../services/mockBackend';
 
 interface LayoutProps {
   children: React.ReactNode;
   user: User | null;
   onLogout: () => void;
-  onLogin: (role: Role) => void;
+  onLogin: (user: User) => void;
 }
 
 export const Layout: React.FC<LayoutProps> = ({ children, user, onLogout, onLogin }) => {
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
   const [isLoginModalOpen, setIsLoginModalOpen] = useState(false);
-  const location = useLocation();
+  const [isRegistering, setIsRegistering] = useState(false);
+  
+  // Auth Form State
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [name, setName] = useState('');
+  const [companyName, setCompanyName] = useState('');
+  const [selectedRole, setSelectedRole] = useState<Role>('BUYER');
+  const [authError, setAuthError] = useState<string | null>(null);
+  const [isLoading, setIsLoading] = useState(false);
+
   const navigate = useNavigate();
 
-  const handleLoginSelection = (role: Role) => {
-    onLogin(role);
-    setIsLoginModalOpen(false);
-    // Redirect based on role
-    if (role === 'SELLER') navigate('/seller');
-    if (role === 'ADMIN') navigate('/admin');
-    if (role === 'BUYER') navigate('/catalog');
+  const handleAuthSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setAuthError(null);
+    setIsLoading(true);
+
+    try {
+        let loggedUser: User;
+        if (isRegistering) {
+            loggedUser = await mockBackend.register(email, password, selectedRole, name, companyName);
+        } else {
+            loggedUser = await mockBackend.login(email, password);
+        }
+        
+        onLogin(loggedUser);
+        setIsLoginModalOpen(false);
+        resetForm();
+
+        // Redirect logic
+        if (loggedUser.role === 'SELLER') navigate('/seller');
+        else if (loggedUser.role === 'ADMIN') navigate('/admin');
+        else navigate('/catalog');
+
+    } catch (err: any) {
+        console.error(err);
+        setAuthError(err.message || 'Ошибка авторизации. Проверьте данные.');
+    } finally {
+        setIsLoading(false);
+    }
+  };
+
+  const resetForm = () => {
+    setEmail('');
+    setPassword('');
+    setName('');
+    setCompanyName('');
+    setAuthError(null);
   };
 
   const handleProfileClick = () => {
     if (user) {
-        // Redirect to appropriate dashboard
         if (user.role === 'SELLER') navigate('/seller');
         else if (user.role === 'ADMIN') navigate('/admin');
         else navigate('/orders');
@@ -69,7 +108,6 @@ export const Layout: React.FC<LayoutProps> = ({ children, user, onLogout, onLogi
       <header className="bg-white border-b border-slate-200 sticky top-0 z-40 shadow-sm">
         <div className="max-w-7xl mx-auto px-4 lg:px-8 h-20 flex items-center justify-between gap-4">
             
-            {/* Logo */}
             <Link to="/" className="flex items-center flex-shrink-0 group">
                 <div className="bg-blue-600 p-2 rounded-lg mr-2 group-hover:bg-blue-700 transition-colors">
                     <ShieldCheck className="w-6 h-6 text-white" />
@@ -80,25 +118,19 @@ export const Layout: React.FC<LayoutProps> = ({ children, user, onLogout, onLogi
                 </div>
             </Link>
 
-            {/* Desktop Navigation */}
             <nav className="hidden md:flex items-center space-x-8 font-medium text-sm text-slate-600">
                 <Link to="/catalog" className="hover:text-blue-600 transition-colors">Каталог</Link>
                 <Link to="/promos" className="hover:text-blue-600 transition-colors text-red-500">Акции %</Link>
                 <Link to="/suppliers" className="hover:text-blue-600 transition-colors">Поставщики</Link>
             </nav>
 
-            {/* Actions */}
             <div className="flex items-center space-x-2 sm:space-x-4">
-                {/* Search Trigger (Mobile only mostly, or expandable) */}
                 <button className="p-2 text-slate-500 hover:text-blue-600 transition-colors md:hidden">
                     <Search className="w-6 h-6" />
                 </button>
 
                 <div className="hidden sm:flex items-center relative group cursor-pointer mr-2">
                      <ShoppingCart className="w-6 h-6 text-slate-600 group-hover:text-blue-600 transition-colors" />
-                     <span className="absolute -top-1.5 -right-1.5 bg-red-500 text-white text-[10px] font-bold w-4 h-4 flex items-center justify-center rounded-full">
-                        2
-                     </span>
                 </div>
 
                 {user ? (
@@ -107,12 +139,12 @@ export const Layout: React.FC<LayoutProps> = ({ children, user, onLogout, onLogi
                             onClick={handleProfileClick}
                             className="flex items-center gap-2 text-sm font-medium text-slate-700 hover:text-blue-600"
                         >
-                            <div className="w-8 h-8 rounded-full bg-blue-100 flex items-center justify-center text-blue-600 font-bold">
-                                {user.name[0]}
+                            <div className="w-8 h-8 rounded-full bg-blue-100 flex items-center justify-center text-blue-600 font-bold uppercase">
+                                {user.email[0]}
                             </div>
                             <div className="hidden lg:block text-left">
-                                <p className="leading-none">{user.name.split(' ')[0]}</p>
-                                <p className="text-[10px] text-slate-400 uppercase mt-0.5">{user.role}</p>
+                                <p className="leading-none max-w-[100px] truncate">{user.name || user.email}</p>
+                                <p className="text-[10px] text-slate-400 uppercase mt-0.5">{user.role === 'BUYER' ? 'Покупатель' : 'Продавец'}</p>
                             </div>
                         </button>
                         <button 
@@ -129,11 +161,10 @@ export const Layout: React.FC<LayoutProps> = ({ children, user, onLogout, onLogi
                         className="flex items-center px-4 py-2 bg-slate-900 text-white rounded-lg hover:bg-slate-800 transition-colors text-sm font-medium"
                     >
                         <UserIcon className="w-4 h-4 mr-2" />
-                        <span>Кабинет</span>
+                        <span>Войти</span>
                     </button>
                 )}
 
-                {/* Mobile Menu Toggle */}
                 <button 
                     className="md:hidden p-2 text-slate-600"
                     onClick={() => setIsMobileMenuOpen(!isMobileMenuOpen)}
@@ -166,91 +197,130 @@ export const Layout: React.FC<LayoutProps> = ({ children, user, onLogout, onLogi
                     <ShieldCheck className="w-6 h-6 mr-2 text-blue-500" />
                     <span className="font-bold text-xl">МеталлМаркет</span>
                 </div>
-                <p className="text-sm">Крупнейший B2B маркетплейс металлопроката в России. Объединяем производителей и строителей.</p>
+                <p className="text-sm">Крупнейший B2B маркетплейс металлопроката.</p>
             </div>
-            <div>
-                <h4 className="text-white font-bold mb-4">Покупателям</h4>
-                <ul className="space-y-2 text-sm">
-                    <li><Link to="/catalog" className="hover:text-white">Каталог продукции</Link></li>
-                    <li><Link to="#" className="hover:text-white">Как сделать заказ</Link></li>
-                    <li><Link to="#" className="hover:text-white">Доставка и оплата</Link></li>
-                    <li><Link to="#" className="hover:text-white">Возврат товара</Link></li>
-                </ul>
-            </div>
-            <div>
-                <h4 className="text-white font-bold mb-4">Поставщикам</h4>
-                <ul className="space-y-2 text-sm">
-                    <li><Link to="#" className="hover:text-white">Стать партнером</Link></li>
-                    <li><Link to="#" className="hover:text-white">Тарифы размещения</Link></li>
-                    <li><Link to="#" className="hover:text-white">Личный кабинет</Link></li>
-                    <li><Link to="#" className="hover:text-white">Правила платформы</Link></li>
-                </ul>
-            </div>
-            <div>
-                <h4 className="text-white font-bold mb-4">Контакты</h4>
-                <ul className="space-y-2 text-sm">
-                    <li>support@metalmarket.ru</li>
-                    <li>8 (800) 555-35-35</li>
-                    <li>Москва, ул. Сталеваров, 24</li>
-                </ul>
-            </div>
+            {/* ... footer links ... */}
         </div>
         <div className="max-w-7xl mx-auto px-4 lg:px-8 mt-12 pt-8 border-t border-slate-800 text-sm text-center">
             &copy; 2024 MetalMarket B2B. Все права защищены.
         </div>
       </footer>
 
-      {/* Login Modal */}
+      {/* AUTH MODAL */}
       {isLoginModalOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm">
             <div className="bg-white rounded-2xl shadow-2xl max-w-md w-full overflow-hidden animate-in fade-in zoom-in duration-200">
-                <div className="p-6 border-b border-slate-100 flex justify-between items-center">
-                    <h3 className="text-xl font-bold text-slate-900">Вход в личный кабинет</h3>
+                <div className="p-6 border-b border-slate-100 flex justify-between items-center bg-slate-50">
+                    <h3 className="text-xl font-bold text-slate-900">
+                        {isRegistering ? 'Регистрация' : 'Вход в систему'}
+                    </h3>
                     <button 
-                        onClick={() => setIsLoginModalOpen(false)}
-                        className="p-1 rounded-full hover:bg-slate-100 text-slate-500 transition-colors"
+                        onClick={() => { setIsLoginModalOpen(false); resetForm(); }}
+                        className="p-1 rounded-full hover:bg-slate-200 text-slate-500 transition-colors"
                     >
                         <X className="w-5 h-5" />
                     </button>
                 </div>
-                <div className="p-6 space-y-3">
-                    <p className="text-slate-500 text-sm mb-4">Выберите тип вашей учетной записи для продолжения:</p>
-                    
-                    <button 
-                        onClick={() => handleLoginSelection('BUYER')}
-                        className="w-full flex items-center p-4 border border-slate-200 rounded-xl hover:border-blue-500 hover:bg-blue-50 transition-all group"
-                    >
-                        <div className="p-3 bg-blue-100 rounded-full text-blue-600 group-hover:bg-blue-600 group-hover:text-white transition-colors">
-                            <UserIcon className="w-6 h-6" />
+                
+                <form onSubmit={handleAuthSubmit} className="p-6 space-y-4">
+                    {authError && (
+                        <div className="p-3 bg-red-50 text-red-600 text-sm rounded-lg border border-red-200">
+                            {authError}
                         </div>
-                        <div className="ml-4 text-left">
-                            <h4 className="font-bold text-slate-900">Я Покупатель</h4>
-                            <p className="text-xs text-slate-500 mt-1">Ищу металл, хочу оформить заказ</p>
-                        </div>
-                    </button>
+                    )}
 
-                    <button 
-                        onClick={() => handleLoginSelection('SELLER')}
-                        className="w-full flex items-center p-4 border border-slate-200 rounded-xl hover:border-emerald-500 hover:bg-emerald-50 transition-all group"
-                    >
-                        <div className="p-3 bg-emerald-100 rounded-full text-emerald-600 group-hover:bg-emerald-600 group-hover:text-white transition-colors">
-                            <Briefcase className="w-6 h-6" />
+                    {isRegistering && (
+                        <div className="grid grid-cols-2 gap-3 mb-4">
+                            <button
+                                type="button" 
+                                onClick={() => setSelectedRole('BUYER')}
+                                className={`p-3 rounded-lg border flex flex-col items-center justify-center gap-2 transition-all ${selectedRole === 'BUYER' ? 'border-blue-500 bg-blue-50 text-blue-700' : 'border-slate-200 text-slate-500 hover:border-slate-300'}`}
+                            >
+                                <UserIcon className="w-6 h-6" />
+                                <span className="text-sm font-bold">Покупатель</span>
+                            </button>
+                            <button 
+                                type="button"
+                                onClick={() => setSelectedRole('SELLER')}
+                                className={`p-3 rounded-lg border flex flex-col items-center justify-center gap-2 transition-all ${selectedRole === 'SELLER' ? 'border-emerald-500 bg-emerald-50 text-emerald-700' : 'border-slate-200 text-slate-500 hover:border-slate-300'}`}
+                            >
+                                <Briefcase className="w-6 h-6" />
+                                <span className="text-sm font-bold">Продавец</span>
+                            </button>
                         </div>
-                        <div className="ml-4 text-left">
-                            <h4 className="font-bold text-slate-900">Я Поставщик</h4>
-                            <p className="text-xs text-slate-500 mt-1">Хочу разместить товары и продавать</p>
-                        </div>
-                    </button>
+                    )}
 
-                    <div className="pt-4 mt-2 border-t border-slate-100 text-center">
-                         <button 
-                            onClick={() => handleLoginSelection('ADMIN')}
-                            className="text-xs text-slate-400 hover:text-slate-600 flex items-center justify-center w-full"
-                         >
-                            <Shield className="w-3 h-3 mr-1" /> Вход для администратора
-                         </button>
+                    {isRegistering && (
+                         <div>
+                            <label className="block text-sm font-medium text-slate-700 mb-1">Ваше имя</label>
+                            <input 
+                                required
+                                type="text" 
+                                value={name}
+                                onChange={e => setName(e.target.value)}
+                                className="w-full px-4 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:outline-none"
+                                placeholder="Иван Иванов"
+                            />
+                        </div>
+                    )}
+
+                    {isRegistering && selectedRole === 'SELLER' && (
+                        <div>
+                            <label className="block text-sm font-medium text-slate-700 mb-1">Название компании</label>
+                            <input 
+                                required
+                                type="text" 
+                                value={companyName}
+                                onChange={e => setCompanyName(e.target.value)}
+                                className="w-full px-4 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:outline-none"
+                                placeholder="ООО Северсталь"
+                            />
+                        </div>
+                    )}
+
+                    <div>
+                        <label className="block text-sm font-medium text-slate-700 mb-1">Email</label>
+                        <input 
+                            required
+                            type="email" 
+                            value={email}
+                            onChange={e => setEmail(e.target.value)}
+                            className="w-full px-4 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:outline-none"
+                            placeholder="mail@example.com"
+                        />
                     </div>
-                </div>
+
+                    <div>
+                        <label className="block text-sm font-medium text-slate-700 mb-1">Пароль</label>
+                        <input 
+                            required
+                            type="password" 
+                            value={password}
+                            onChange={e => setPassword(e.target.value)}
+                            className="w-full px-4 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:outline-none"
+                            placeholder="******"
+                            minLength={6}
+                        />
+                    </div>
+
+                    <button 
+                        type="submit" 
+                        disabled={isLoading}
+                        className="w-full bg-blue-600 text-white font-bold py-3 rounded-lg hover:bg-blue-700 transition-colors flex justify-center items-center"
+                    >
+                        {isLoading ? <Loader2 className="w-5 h-5 animate-spin" /> : (isRegistering ? 'Зарегистрироваться' : 'Войти')}
+                    </button>
+
+                    <div className="text-center pt-2">
+                        <button 
+                            type="button"
+                            onClick={() => { setIsRegistering(!isRegistering); resetForm(); }}
+                            className="text-sm text-blue-600 hover:underline"
+                        >
+                            {isRegistering ? 'Уже есть аккаунт? Войти' : 'Нет аккаунта? Зарегистрироваться'}
+                        </button>
+                    </div>
+                </form>
             </div>
         </div>
       )}

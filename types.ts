@@ -1,5 +1,7 @@
 
 export type Role = 'ADMIN' | 'SELLER' | 'BUYER';
+export type VerificationStatus = 'NEW' | 'PENDING' | 'VERIFIED' | 'REJECTED' | 'BLOCKED';
+export type ProductStatus = 'ACTIVE' | 'DRAFT' | 'MODERATION' | 'REJECTED' | 'ARCHIVED';
 
 export interface User {
   id: string;
@@ -11,12 +13,15 @@ export interface User {
   companyName?: string;
   rating?: number;
   isVerified?: boolean;
+  verificationStatus?: VerificationStatus; // New field for Admin
   yearsOnPlatform?: number;
   region?: string;
   balance?: number;
   inn?: string;
+  ogrn?: string;
   phone?: string;
   website?: string;
+  createdAt?: string;
 }
 
 export interface Category {
@@ -40,7 +45,7 @@ export interface Product {
   tags: string[];
   views: number;
   createdAt: string;
-  status: 'ACTIVE' | 'DRAFT' | 'MODERATION' | 'ARCHIVED';
+  status: ProductStatus;
   region: string;
   gost?: string;
 }

@@ -1,23 +1,33 @@
 
--- MASTER FIX SCRIPT
--- 1. Drop tables that depend on categories or have wrong types (Data in these tables will be reset!)
+-- MASTER FIX SCRIPT & ADMIN UPDATE
+-- 1. Drop tables that might cause conflicts (Data reset!)
 drop table if exists public.excel_import_logs cascade;
 drop table if exists public.leads cascade;
 drop table if exists public.products cascade;
 drop table if exists public.categories cascade;
+drop table if exists public.admin_logs cascade;
+drop table if exists public.tags cascade;
 
--- Note: We do NOT drop 'profiles' to keep your users.
+-- Note: We do NOT drop 'profiles' completely to keep users, but we will alter it.
 
--- 2. Create Categories with TEXT ID (Fixes "invalid input syntax for type uuid")
+-- 2. Update Profiles for Verification
+alter table public.profiles add column if not exists verification_status text default 'NEW' check (verification_status in ('NEW', 'PENDING', 'VERIFIED', 'REJECTED', 'BLOCKED'));
+alter table public.profiles add column if not exists ogrn text;
+alter table public.profiles add column if not exists documents jsonb default '[]'::jsonb;
+alter table public.profiles add column if not exists created_at timestamptz default now();
+
+-- 3. Create Categories
 create table public.categories (
-  id text primary key, -- Changed from UUID to TEXT to support "c1", "c1-1"
+  id text primary key,
   name text not null,
   parent_id text references public.categories(id),
   image text,
+  is_active boolean default true,
+  slug text,
   created_at timestamptz default now()
 );
 
--- 3. SEED CATEGORIES (Critical: Products cannot be created without existing categories)
+-- Seed Categories
 insert into public.categories (id, name, parent_id, image) values
 ('c1', 'Сортовой прокат', null, 'https://images.unsplash.com/photo-1626284620359-994df7ee1912?auto=format&fit=crop&q=80&w=500'),
 ('c2', 'Листовой прокат', null, 'https://images.unsplash.com/photo-1504917595217-d4dc5ebe6122?auto=format&fit=crop&q=80&w=500'),
@@ -32,11 +42,11 @@ insert into public.categories (id, name, parent_id, image) values
 ('c4-2', 'Швеллер', 'c4', null)
 on conflict (id) do nothing;
 
--- 4. Recreate Products with correct Foreign Key type
+-- 4. Create Products
 create table public.products (
   id uuid default gen_random_uuid() primary key,
   seller_id uuid references public.profiles(id) not null,
-  category_id text references public.categories(id) not null, -- Changed to TEXT
+  category_id text references public.categories(id) not null,
   name text not null,
   description text,
   price numeric not null,
@@ -47,12 +57,13 @@ create table public.products (
   views int default 0,
   region text,
   gost text,
-  status text default 'ACTIVE',
+  status text default 'MODERATION', -- Default to MODERATION for safety
+  moderation_comment text,
   created_at timestamptz default now(),
   updated_at timestamptz default now()
 );
 
--- 5. Recreate other tables
+-- 5. Create Leads
 create table public.leads (
   id uuid default gen_random_uuid() primary key,
   seller_id uuid references public.profiles(id) not null,
@@ -66,6 +77,7 @@ create table public.leads (
   created_at timestamptz default now()
 );
 
+-- 6. Create Import Logs
 create table public.excel_import_logs (
   id uuid default gen_random_uuid() primary key,
   seller_id uuid references public.profiles(id) not null,
@@ -75,13 +87,25 @@ create table public.excel_import_logs (
   created_at timestamptz default now()
 );
 
--- 6. Re-enable RLS
+-- 7. Create Admin Logs (Security)
+create table public.admin_logs (
+  id uuid default gen_random_uuid() primary key,
+  admin_id uuid references public.profiles(id),
+  action text not null,
+  target_id text,
+  details jsonb,
+  ip_address text,
+  created_at timestamptz default now()
+);
+
+-- 8. Enable RLS
 alter table public.categories enable row level security;
 alter table public.products enable row level security;
 alter table public.leads enable row level security;
 alter table public.excel_import_logs enable row level security;
+alter table public.admin_logs enable row level security;
 
--- 7. Re-apply Policies
+-- 9. Policies
 -- Categories (Public Read)
 create policy "Categories are viewable by everyone" on public.categories for select using (true);
 
@@ -91,33 +115,27 @@ create policy "Sellers can manage own products" on public.products for all using
 
 -- Leads
 create policy "Sellers can view own leads" on public.leads for select using (auth.uid() = seller_id);
-create policy "Everyone can insert leads" on public.leads for insert with check (true); -- Allow buyers to create leads
+create policy "Everyone can insert leads" on public.leads for insert with check (true);
 
 -- Import Logs
 create policy "Sellers can view own logs" on public.excel_import_logs for select using (auth.uid() = seller_id);
 create policy "Sellers can insert logs" on public.excel_import_logs for insert with check (auth.uid() = seller_id);
 
--- Profiles (Ensure these exist from previous fixes)
-drop policy if exists "Users can see own profile" on public.profiles;
-create policy "Users can see own profile" on public.profiles for select using (auth.uid() = id);
+-- Admin Access Policy (Simplified for demo: relies on backend checks mostly, but in real Prod we need is_admin flag in JWT)
+-- Ideally: create policy "Admins can do everything" on ... using ((auth.jwt() ->> 'role') = 'ADMIN');
 
-drop policy if exists "Users can update own profile" on public.profiles;
-create policy "Users can update own profile" on public.profiles for update using (auth.uid() = id);
-
-drop policy if exists "Users can insert own profile" on public.profiles;
-create policy "Users can insert own profile" on public.profiles for insert with check (auth.uid() = id);
-
--- 8. Ensure Trigger exists (Just in case)
+-- 10. Trigger for New User
 create or replace function public.handle_new_user() 
 returns trigger as $$
 begin
-  insert into public.profiles (id, email, name, role, company_name)
+  insert into public.profiles (id, email, name, role, company_name, verification_status)
   values (
     new.id, 
     new.email, 
     coalesce(new.raw_user_meta_data->>'name', 'Пользователь'), 
     coalesce(new.raw_user_meta_data->>'role', 'BUYER'),
-    new.raw_user_meta_data->>'company_name'
+    new.raw_user_meta_data->>'company_name',
+    CASE WHEN (new.raw_user_meta_data->>'role') = 'SELLER' THEN 'PENDING' ELSE 'VERIFIED' END
   );
   return new;
 exception

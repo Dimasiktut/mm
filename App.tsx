@@ -3,6 +3,8 @@ import React, { useState, useEffect } from 'react';
 import { HashRouter, Routes, Route, Navigate, Outlet } from 'react-router-dom';
 import { Layout } from './components/Layout';
 import { SellerLayout } from './components/SellerLayout';
+import { AdminLayout } from './components/AdminLayout'; // Import AdminLayout
+
 import { ExcelUploader } from './components/ExcelUploader';
 import { SellerDashboard } from './pages/SellerDashboard';
 import { SellerProducts } from './pages/SellerProducts';
@@ -12,6 +14,12 @@ import { BuyerCatalog } from './pages/BuyerCatalog';
 import { BuyerHome } from './pages/BuyerHome';
 import { ProductDetail } from './pages/ProductDetail';
 import { AdminArchitecture } from './pages/AdminArchitecture';
+
+// Admin Pages
+import { AdminDashboard } from './pages/admin/AdminDashboard';
+import { AdminCompanies } from './pages/admin/AdminCompanies';
+import { AdminProducts } from './pages/admin/AdminProducts';
+
 import { User, Role } from './types';
 import { mockBackend } from './services/mockBackend';
 
@@ -74,20 +82,6 @@ const AppContent: React.FC = () => {
                          </div>
                     </ProtectedRoute>
                 } />
-                
-                {/* Admin Routes */}
-                 <Route path="/admin" element={
-                     <ProtectedRoute user={user} allowedRoles={['ADMIN']}>
-                        <div className="bg-white p-8 rounded-lg border border-slate-200 shadow-sm min-h-[400px]">
-                            <h2 className="text-2xl font-bold mb-4">Панель администратора</h2>
-                        </div>
-                    </ProtectedRoute>
-                } />
-                 <Route path="/admin/architecture" element={
-                     <ProtectedRoute user={user} allowedRoles={['ADMIN']}>
-                        <AdminArchitecture />
-                    </ProtectedRoute>
-                } />
             </Route>
 
             {/* SELLER AREA */}
@@ -102,6 +96,19 @@ const AppContent: React.FC = () => {
                 <Route path="profile" element={user && <SellerProfile user={user} />} />
                 <Route path="import" element={user && <div className="space-y-6"><h2 className="text-2xl font-bold text-slate-900">Массовый импорт товаров</h2><ExcelUploader sellerId={user.id} /></div>} />
                 <Route path="*" element={<div className="p-10 text-slate-400">Раздел в разработке</div>} />
+            </Route>
+
+            {/* ADMIN AREA */}
+            <Route path="/admin" element={
+                <ProtectedRoute user={user} allowedRoles={['ADMIN']}>
+                    <AdminLayout user={user} onLogout={handleLogout}><Outlet /></AdminLayout>
+                </ProtectedRoute>
+            }>
+                <Route index element={<AdminDashboard />} />
+                <Route path="companies" element={<AdminCompanies />} />
+                <Route path="products" element={<AdminProducts />} />
+                <Route path="architecture" element={<AdminArchitecture />} />
+                <Route path="*" element={<div className="p-10 text-center text-slate-400">Модуль в разработке...</div>} />
             </Route>
 
             <Route path="*" element={<Navigate to="/" />} />

@@ -35,50 +35,64 @@ class BackendService {
   async register(email: string, password: string, role: Role, name: string, companyName?: string): Promise<User> {
     if (!isSupabaseConfigured() || !supabase) throw new Error("Supabase not configured");
 
-    // 1. Создаем пользователя в Auth
-    const { data, error } = await supabase.auth.signUp({
-      email,
-      password,
-      options: {
-        data: {
-          role,
-          name,
-          company_name: companyName,
-        }
-      }
-    });
-
-    if (error) throw error;
-    if (!data.user) throw new Error("Registration failed");
-
-    // 2. Ждем триггер, затем пытаемся получить профиль или создать его вручную
-    // Небольшая задержка для триггера
-    await new Promise(r => setTimeout(r, 500));
-
     try {
-        return await this.fetchUserProfile(data.user.id, email);
-    } catch (e) {
-        console.warn("Profile not found after trigger, attempting manual creation...");
-        
-        // Ручное создание, если триггер не сработал.
-        // Теперь это сработает, так как мы добавили Policy FOR INSERT в SQL.
-        const { error: insertError } = await supabase.from('profiles').insert({
-            id: data.user.id,
-            email: email,
-            name: name,
-            role: role,
-            company_name: companyName
+        // 1. Создаем пользователя в Auth
+        const { data, error } = await supabase.auth.signUp({
+          email,
+          password,
+          options: {
+            data: {
+              role,
+              name,
+              company_name: companyName,
+            }
+          }
         });
 
-        if (insertError) {
-            console.error("Manual profile insert failed:", insertError);
-            if (insertError.code === '42501') {
-                throw new Error("Ошибка доступа к БД. Запустите обновленный 'supabase_setup.sql' для исправления прав.");
+        if (error) {
+            // Специальная обработка для Rate Limit (429)
+            if (error.status === 429 || error.message?.includes('rate limit') || error.code === 'over_email_send_rate_limit') {
+                throw new Error("Превышен лимит отправки писем. Пожалуйста, отключите 'Confirm email' в настройках Supabase (Authentication -> Providers -> Email) и попробуйте снова.");
             }
-            throw insertError;
+            throw error;
         }
 
-        return await this.fetchUserProfile(data.user.id, email);
+        if (!data.user) throw new Error("Registration failed");
+
+        // 2. Ждем триггер, затем пытаемся получить профиль или создать его вручную
+        // Небольшая задержка для триггера
+        await new Promise(r => setTimeout(r, 500));
+
+        try {
+            return await this.fetchUserProfile(data.user.id, email);
+        } catch (e) {
+            console.warn("Profile not found after trigger, attempting manual creation...");
+            
+            // Ручное создание, если триггер не сработал.
+            // Работает благодаря Policy FOR INSERT.
+            const { error: insertError } = await supabase.from('profiles').insert({
+                id: data.user.id,
+                email: email,
+                name: name,
+                role: role,
+                company_name: companyName
+            });
+
+            if (insertError) {
+                console.error("Manual profile insert failed:", insertError);
+                if (insertError.code === '42501') {
+                    throw new Error("Ошибка доступа к БД. Запустите обновленный 'supabase_setup.sql' для исправления прав.");
+                }
+                throw insertError;
+            }
+
+            return await this.fetchUserProfile(data.user.id, email);
+        }
+
+    } catch (err: any) {
+        console.error("Registration error:", err);
+        // Пробрасываем сообщение пользователю
+        throw err;
     }
   }
 

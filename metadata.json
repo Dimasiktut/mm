@@ -1,0 +1,5 @@
+{
+  "name": "MetalMarket B2B",
+  "description": "A high-performance B2B marketplace for steel and metal products with roles for Admin, Seller, and Buyer. Features Excel import simulation, analytics dashboards, and catalog filtering.",
+  "requestFramePermissions": []
+}
